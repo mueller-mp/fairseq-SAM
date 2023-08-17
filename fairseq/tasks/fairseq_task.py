@@ -503,7 +503,7 @@ class FairseqTask(object):
         )
 
     def train_step(
-        self, sample, model, criterion, optimizer, update_num, ignore_grad=False
+        self, sample, model, criterion, optimizer, update_num, ignore_grad=False, return_closure=False
     ):
         """
         Do forward and backward, and return the loss as computed by *criterion*
@@ -527,14 +527,46 @@ class FairseqTask(object):
         """
         model.train()
         model.set_num_updates(update_num)
-        with torch.autograd.profiler.record_function("forward"):
-            with torch.cuda.amp.autocast(enabled=(isinstance(optimizer, AMPOptimizer))):
-                loss, sample_size, logging_output = criterion(model, sample)
-        if ignore_grad:
-            loss *= 0
-        with torch.autograd.profiler.record_function("backward"):
-            optimizer.backward(loss)
-        return loss, sample_size, logging_output
+        # SAM MAX
+        if not return_closure:
+            with torch.autograd.profiler.record_function("forward"):
+                with torch.cuda.amp.autocast(enabled=(isinstance(optimizer, AMPOptimizer))):
+                    try:
+                        if "esam" in optimizer.cfg.sam_type:
+                            loss, sample_size, logging_output, _ = criterion(model, sample)
+                        else:
+                            loss, sample_size, logging_output = criterion(model, sample)
+                    except:
+                        loss, sample_size, logging_output = criterion(model, sample)
+            if ignore_grad:
+                loss *= 0
+            with torch.autograd.profiler.record_function("backward"):
+                optimizer.backward(loss)
+            return loss, sample_size, logging_output
+        else:
+            def closure(backward_grad_sync=True, forward_grad_sync=True, loss_backward=True, is_esam=False, input_samples=None):
+                model.require_backward_grad_sync=backward_grad_sync
+                model.require_forward_param_sync=forward_grad_sync
+                if input_samples is None:
+                    input_samples=sample
+                optimizer.zero_grad()
+                with torch.set_grad_enabled(True):
+                    with torch.autograd.profiler.record_function("forward"):
+                        with torch.cuda.amp.autocast(enabled=(isinstance(optimizer, AMPOptimizer))):
+                            if is_esam:
+                                loss, sample_size, logging_output,loss_all = criterion(model, input_samples, is_esam=is_esam)
+                            else:
+                                loss, sample_size, logging_output = criterion(model, input_samples)
+                    if ignore_grad:
+                        loss *= 0
+                    if loss_backward:
+                        with torch.autograd.profiler.record_function("backward"):
+                            optimizer.backward(loss)
+                if is_esam:
+                    return loss, sample_size, logging_output,loss_all
+                else:
+                    return loss, sample_size, logging_output
+            return closure
 
     def valid_step(self, sample, model, criterion):
         model.eval()
@@ -542,8 +574,14 @@ class FairseqTask(object):
             loss, sample_size, logging_output = criterion(model, sample)
         return loss, sample_size, logging_output
 
-    def optimizer_step(self, optimizer, model, update_num):
-        optimizer.step()
+    def optimizer_step(self, optimizer, model, update_num,closure=None,set_fisher_mask=False, loss_before=None,input_samples=None):
+        if closure is not None:
+            if optimizer.cfg.sam_type in ["fisher-esam","fisher-gsam", "fisher-sam"]:
+                optimizer.step(closure=closure, set_fisher_mask=set_fisher_mask, loss_before=loss_before, input_samples=input_samples)
+            else:
+                optimizer.step(closure=closure, loss_before=loss_before, input_samples=input_samples)
+        else:
+            optimizer.step(closure=closure)
 
     def build_dataset_for_inference(
         self, src_tokens: List[torch.Tensor], src_lengths: List[int], **kwargs

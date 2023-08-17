@@ -139,3 +139,15 @@ wandb/
 nohup.out
 multirun
 outputs
+
+# Max
+CoLA-bin
+checkpoints-sam-0.1
+dict.txt
+encoder.json
+examples/translation/iwslt14.tokenized.de-en
+examples/translation/mosesdecoder
+examples/translation/orig
+examples/translation/subword-nmt
+glue_data
+vocab.bpe

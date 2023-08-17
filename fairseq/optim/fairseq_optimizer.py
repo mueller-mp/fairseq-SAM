@@ -119,21 +119,28 @@ class FairseqOptimizer(object):
         """Clips gradient norm."""
         return utils.clip_grad_norm_(self.params, max_norm, aggregate_norm_fn)
 
-    def step(self, closure=None, scale=1.0, groups=None):
+    def step(self, closure=None, scale=1.0, groups=None, set_fisher_mask=False, loss_before=None, input_samples=None):
         """Performs a single optimization step."""
         if self.supports_step_with_scale:
             if self.supports_groups:
                 self.optimizer.step(closure, scale=scale, groups=groups)
             else:
-                self.optimizer.step(closure, scale=scale)
+                if closure is not None:
+                    if (self.cfg.sam_type in ["fisher-esam","fisher-gsam", "fisher-sam"]) and set_fisher_mask:
+                        self.optimizer.set_fisher_mask(closure=closure)
+                    self.optimizer.step(closure, scale=scale, loss_before=loss_before, input_samples=input_samples)
+                else:
+                    self.optimizer.step(closure, scale=scale)
         else:
             if scale != 1.0:
                 self.multiply_grads(1.0 / scale)
             if self.supports_groups:
                 self.optimizer.step(closure, groups=groups)
             else:
-                self.optimizer.step(closure)
-
+                if (self.cfg.sam_type in ["fisher-esam","fisher-gsam", "fisher-sam"]) and set_fisher_mask:
+                    self.optimizer.set_fisher_mask(closure=closure)
+                self.optimizer.step(closure, loss_before=loss_before, input_samples=input_samples)
+                
     def zero_grad(self):
         """Clears the gradients of all optimized parameters."""
         for p in self.params:

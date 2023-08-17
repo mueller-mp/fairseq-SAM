@@ -814,6 +814,16 @@ class Trainer(object):
 
         # forward and backward pass
         logging_outputs, sample_size, ooms = [], 0, 0
+
+        # SAM MAX
+        set_fisher_mask=False
+        if (self.cfg.optimizer.sam_type in ["fisher-esam", "fisher-sam","fisher-gsam"]) and (self.get_num_updates() % self.cfg.optimizer.mask_iter_e) == 0:
+            set_fisher_mask=True
+        
+        is_esam=False
+        if "esam" in self.cfg.optimizer.sam_type:
+            is_esam=True
+
         for i, sample in enumerate(samples):  # delayed update loop
             sample, is_dummy_batch = self._prepare_sample(sample)
 
@@ -836,24 +846,47 @@ class Trainer(object):
                     return self.model.no_sync()
                 else:
                     return contextlib.ExitStack()  # dummy contextmanager
+                
+            # SAM MAX
+            closure=False
+            if self.cfg["optimizer"]["_name"] == "samsgd":
+                closure=True
 
             try:
                 with maybe_no_sync():
                     # forward and backward
-                    loss, sample_size_i, logging_output = self.task.train_step(
-                        sample=sample,
-                        model=self.model,
-                        criterion=self.criterion,
-                        optimizer=self.optimizer,
-                        update_num=self.get_num_updates(),
-                        ignore_grad=is_dummy_batch,
-                        **extra_kwargs,
-                    )
-                    del loss
+                    if not closure:
+                        loss, sample_size_i, logging_output = self.task.train_step(
+                            sample=sample,
+                            model=self.model,
+                            criterion=self.criterion,
+                            optimizer=self.optimizer,
+                            update_num=self.get_num_updates(),
+                            ignore_grad=is_dummy_batch,
+                            **extra_kwargs,
+                        )
+                        del loss
 
-                logging_outputs.append(logging_output)
-                sample_size += sample_size_i
-
+                        logging_outputs.append(logging_output)
+                        sample_size += sample_size_i
+                    else:
+                        print(self.task)
+                        closure=self.task.train_step(
+                            sample=sample,
+                            model=self.model,
+                            criterion=self.criterion,
+                            optimizer=self.optimizer,
+                            update_num=self.get_num_updates(),
+                            ignore_grad=is_dummy_batch,
+                            return_closure=True
+                        )
+                        if is_esam:
+                            loss, sample_size_i, logging_output, loss_all=closure(is_esam=is_esam)
+                        else:
+                            loss, sample_size_i, logging_output=closure()
+                            loss_all=loss
+                        logging_outputs.append(logging_output)
+                        sample_size += sample_size_i
                 # emptying the CUDA cache after the first step can
                 # reduce the chance of OOM
                 if self.cuda and self.get_num_updates() == 0:
@@ -970,10 +1003,17 @@ class Trainer(object):
                         raise FloatingPointError("gradients are Nan/Inf")
 
             with torch.autograd.profiler.record_function("optimizer"):
-                # take an optimization step
-                self.task.optimizer_step(
+                if closure:
+                    self.task.optimizer_step(
+                        self.optimizer, model=self.model, update_num=self.get_num_updates(),closure=closure, set_fisher_mask=set_fisher_mask, loss_before=loss_all, input_samples=sample
+                    )
+                    set_fisher_mask=False
+                    del loss, loss_all
+                else:
+                    # take an optimization step
+                    self.task.optimizer_step(
                     self.optimizer, model=self.model, update_num=self.get_num_updates()
-                )
+                    )
                 if self.cfg.common.amp and overflow:
                     if self._amp_retries == self.cfg.common.amp_batch_retries:
                         logger.info("AMP: skipping this batch.")

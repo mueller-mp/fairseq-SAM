@@ -29,6 +29,9 @@ class FairseqAdamConfig(FairseqDataclass):
     adam_eps: float = field(
         default=1e-8, metadata={"help": "epsilon for Adam optimizer"}
     )
+    sam_type: str = field(
+        default="none", metadata={"help": "sam type"}
+    )
     weight_decay: float = field(default=0.0, metadata={"help": "weight decay"})
     use_old_adam: bool = field(
         default=False, metadata={"help": "Use fairseq.optim.adam.Adam"}
@@ -156,7 +159,7 @@ class Adam(torch.optim.Optimizer):
     def supports_flat_params(self):
         return True
 
-    def step(self, closure=None):
+    def step(self, closure=None, loss_before=None, input_samples=None):
         """Performs a single optimization step.
 
         Args:
